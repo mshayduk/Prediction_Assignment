@@ -1,0 +1,203 @@
+---
+title: "Prediction Assignment"
+author: "Maxim Shayduk"
+date: "February 26, 2016"
+output: html_document
+---
+
+<style>
+table.res th {
+    background-color: #333333;
+    color: #ffffff;
+}
+table.print th {
+    background-color: #d9d9d9;
+    font-family: Courier; 
+    font-size: small;
+}
+table.print td {
+    font-family: Courier; 
+    font-size: small;
+    background-color: #ffffe5;
+}
+table.res td {
+    background-color: #ffffe5;
+}
+.code{
+    color: darkred; 
+    font-family: Courier; 
+}
+</style>
+
+
+```{r global_options, include=FALSE}
+rm(list=ls()) ### To clear namespace
+library(knitr)
+opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+               echo=TRUE, warning=FALSE, message=FALSE, cashe=TRUE   )
+```
+
+
+### Synopsis ###
+
+The goal of this project is to characterize the "quality" of the certain human activity and identify how well the physical exercise is performed by means of machine learning algorithms. 
+
+This study explores the **Weight Lifting Exercises (WLE) Dataset** from the **Human Activity Recognition** project ([HAR](http://groupware.les.inf.puc-rio.br/har)). The weight lifting experiment was performed with 6 young healthy participants (subjects).  Each subject was asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in 5
+different manners: 
+  
+  * Class A: according to the specification (correct)
+  * Class B: throwing the elbows to the front
+  * Class C: lifting the dumbbell only halfway
+  * Class D: lowering the dumbbell only halfway
+  * Class E: throwing the hips to the front
+
+The activity was characterized with a set of accelerometers worn at arm and forearm as well as attached to the belt and to the dumbbell. The data from this accelerometers is processed resulting in the  vector of 160 features.
+For more detailes see: <http://groupware.les.inf.puc-rio.br/har>. The original reference for the **WLE** dataset: *Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. [Qualitative Activity Recognition of Weight Lifting Exercises](http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201). Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.*
+
+The feature vectors are cleaned by justified dropping of the missing values and the final 52-dimentional feature vectors are used for the classification. The activities are classified into 5 categories by the Random Forest model with the automatic Out-Of-Bag error estimation (no need for cross-validation).
+
+#### Online version: ####
+
+ Rpubs report: <https://rpubs.com/mshayduk/156844> <br>
+ gitHub repo: <https://github.com/mshayduk/Prediction_Assignment.git> <br>
+
+### Data ###
+
+The  original data source comes from the **Human Activity Recognition** project: [HAR](http://groupware.les.inf.puc-rio.br/har). The data for this study is downloaded from here: [pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv), [pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv). The data is read with the fast  <span class='code'>fread</span> function from <span class='code'>data.table</span> R-package:
+
+```{r echo=TRUE, warning=F, message=F}
+    library(data.table)
+    library(caret)
+    library(dplyr)
+    library(randomForest)
+    library(ggplot2)
+    library(xtable)
+
+    set.seed(123)
+    # READ
+    origtrain <- fread("./data/pml-training.csv", sep = ",")
+    origtest <- fread("./data/pml-testing.csv", sep =",")
+```
+
+
+### Preprocessing###
+
+Some of the features need to be coersed to numeric explicitely, since they were not coersed automatically while reading due to the the characters entries in their columns:
+
+```{r warning=F, message=F}
+# drop subject's experimental IDs (first column)
+rawtrain <- select(origtrain, -V1)
+# check character features (for potential coesion to numeric)
+charfeatures <- which(sapply(rawtrain[1,], is.character))
+nlevelscharfeat <- sapply(select(rawtrain, charfeatures), function(x){nlevels(factor(x))})
+tonumeric <- names(nlevelscharfeat)[-c(1:3, length(nlevelscharfeat))]
+rawtrain <- rawtrain %>% mutate_each_( funs(as.numeric), tonumeric)
+```
+
+The feature vectors have  missing values (<span class='code'>NA's</span>). Let's plot those that have missing values **for more than 95\% of observations for class A** (stacking the probabities of NA's for other classes):
+
+```{r fig.width=14, fig.height=4}
+# fraction of NAs per class for every feature
+numofNAdf <- data.frame(rawtrain[, lapply(.SD, function(x){sum(is.na(x)/length(x))}), by=classe])
+names <- numofNAdf[,1]
+numofNAdf <- data.frame(t(numofNAdf[-1]))
+colnames(numofNAdf) <- names
+numofNAdf$feature <- row.names(numofNAdf)
+toplot <- melt(numofNAdf[numofNAdf$A>0.95, ]); colnames(toplot)[2] <- "Class"
+ggplot(data = toplot, aes(x=factor(feature, levels=feature), y=value, fill=Class)) + 
+    xlab("feature") + ylab("Probabity of NA per class") + 
+    geom_bar(stat = "identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+This stacked(!) plot reveals that the probability of <span class='code'>NA</span> in every feature (selected by absence of >95\% of data for class A) is the same for every other class. Thus corresponding features can be dropped without loosing any information:
+
+```{r}
+featurestodrop <- row.names(numofNAdf)[which(numofNAdf$A>0.95)]
+featurestodrop <- which(names(rawtrain)%in%featurestodrop)
+rawtrain <- select(rawtrain, -featurestodrop)
+```
+
+Let's drop also time-stamps, etc..,  leaving only accelerometer-related features. We keep the subject names, but we will not use it as predictor variable (it actually can be used, depending on the question we want to answer):
+
+```{r}
+rawtrain <- select(rawtrain, -c(2:6))
+```
+
+### Model ###
+
+For the model algorithm we select the robust  ensemble learning with Random Forest (original  [Leo Breiman's paper](https://dx.doi.org/10.1023%2FA%3A1010933404324)). One of the advantages of this algorithm that it intrinsically estimates the model error with the out-of-bag (OOB) error estimate. Thus there is no need for cross-validation or a separate test set. But let's split the training data anyway: 
+   
+```{r}
+  inTrain <- createDataPartition(y = rawtrain$classe, p=0.68, list = F)
+  train <- rawtrain[inTrain, ]
+  test <- rawtrain[-inTrain, ]
+```
+
+The data appears to be pretty balanced, so no stratified sampling and/or introduction of class weights are needed:
+
+```{r, results='asis'}
+ classweights <- train[, list(classwt=dim(.SD)[1]/nrow(train)), by=classe] 
+ tableattr="class=res border=0 width=180"
+ print(xtable(classweights, align="lcc"), 
+       type = "html", html.table.attributes=tableattr, include.rownames = F)
+```
+
+<br>
+Let's train the Random Forest with <span class='code'>ntree=200</span> and the default values for all other parameters (i.e. number of randomly selected features at each split, etc...):
+```{r}
+  predictors <- c(2:53)
+  modRF <- randomForest(x=select(train, predictors), y=factor(train$classe), ntree=200); modRF
+```
+
+Here, the bootstrap (with replacement) sample size is equal to the dataset size, so about one-third of the data is left out for the construction of any tree.
+The OOB estimate of overall classification error is **`r 100*modRF$err.rate[200,1]`\%**. 
+The overall OOB errors versus number of trees in Random Forest, along with the errors for every class (Y-axis is in log-scale):
+```{r, fig.width=8, fig.height=4}
+plotOOB <- function(model){
+    oob <- data.frame(model$err.rate)
+    oob$ntrees <- as.numeric(row.names(oob))
+    oobplot <- melt(oob, id.vars = "ntrees"); colnames(oobplot)
+    ggplot(oobplot, aes(x=ntrees, y=100*value, col=variable)) + geom_line(size=1) + 
+        ylab("OOB error, %") + scale_y_log10()
+}
+plotOOB(modRF)
+```
+
+This reveals that ensembling more than $\sim$ 100 trees does not reduce the classification error significantly. However we keep our model unchanged and **validate it on the test set**:
+
+```{r, results='asis'}
+    conf <- confusionMatrix(test$classe, predict(modRF,newdata = test))
+    tableattr="class=res border=0 width=450"
+    print(xtable(conf$byClass[,c(1,2,8)], align="lccc", digits=3), type="html", html.table.attributes=tableattr)
+```
+
+<br>
+
+Let's compare the OOB error estimate  **`r 100*modRF$err.rate[200,1]`\%**  with the 5-fold cross-validation accuracy estimates:  
+```{r cache=T}
+    train <- select(train, -user_name)
+    modRFcv <- train(classe ~ ., train, method="rf", trControl=trainControl(method="cv", 5), ntree=200)
+    modRFcv
+```
+
+The erros estimate from 5-fold cross validation is larger (1-Accuracy): **`r 100-100*modRFcv$results[1,2]`**\%.
+
+### Results ###
+
+The entries in the table above show that the trained model possess both the **high sensitivity** and the **high  specificity** (i.e. approaches ideal classifier). Finally, let us apply the model to the original test dataset of 20 observations:
+
+```{r, results='asis'}
+    predictors <- which(names(origtest)%in%names(train))
+    Prediction <- predict(modRF, newdata = select(origtest, predictors))
+    tableattr="class=res border=0 width=600"
+    print(xtable(t(as.data.frame(Prediction)), align="lcccccccccccccccccccc"), type="html",
+          html.table.attributes=tableattr)
+```
+
+<br>
+<br>
+<br>
+
+
+
+

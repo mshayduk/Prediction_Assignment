@@ -1,0 +1,15 @@
+base
+methods
+datasets
+utils
+grDevices
+graphics
+stats
+knitr
+data.table
+lattice
+ggplot2
+caret
+dplyr
+randomForest
+xtable

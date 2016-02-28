@@ -1,0 +1,25 @@
+{
+    "contents" : "",
+    "created" : 1456677356386.000,
+    "dirty" : false,
+    "encoding" : "",
+    "folds" : "",
+    "hash" : "0",
+    "id" : "5F504A0C",
+    "lastKnownWriteTime" : 8589934591,
+    "path" : null,
+    "project_path" : null,
+    "properties" : {
+        "cacheKey" : "i9yhslekje",
+        "caption" : "train",
+        "contentUrl" : "grid_resource/gridviewer.html?env=&obj=train&cache_key=i9yhslekje",
+        "displayedObservations" : 13344,
+        "environment" : "",
+        "object" : "train",
+        "totalObservations" : 13344,
+        "variables" : 54
+    },
+    "relative_order" : 5,
+    "source_on_save" : false,
+    "type" : "r_dataframe"
+}
